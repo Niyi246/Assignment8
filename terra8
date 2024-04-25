@@ -1,0 +1,238 @@
+
+
+# Configure AWS Provider
+provider "aws" {
+  region = "eu-west-1" # Update with your desired region
+}
+
+# Define VPC CIDR Block
+variable "vpc_cidr" {
+  type = string
+  default = "10.0.0.0/16"
+}
+
+# Define Subnet CIDR Blocks
+variable "public_subnet_1_cidr" {
+  type = string
+  default = "10.0.1.0/24"
+}
+
+variable "public_subnet_2_cidr" {
+  type = string
+  default = "10.0.2.0/24"
+}
+
+variable "private_subnet_1_cidr" {
+  type = string
+  default = "10.0.3.0/24"
+}
+
+variable "private_subnet_2_cidr" {
+  type = string
+  default = "10.0.4.0/24"
+}
+
+# Create VPC
+resource "aws_vpc" "main" {
+  cidr_block = var.vpc_cidr
+}
+
+# Create Internet Gateway
+resource "aws_internet_gateway" "gw" {
+  vpc_id = aws_vpc.main.id
+}
+
+# Create Public Subnets
+resource "aws_subnet" "public_subnet_1" {
+  vpc_id            = aws_vpc.main.id
+  cidr_block        = var.public_subnet_1_cidr
+  availability_zone = "eu-west-1a"
+}
+
+resource "aws_subnet" "public_subnet_2" {
+  vpc_id            = aws_vpc.main.id
+  cidr_block        = var.public_subnet_2_cidr
+  availability_zone = "eu-west-1b"
+}
+
+# Create Private Subnets
+resource "aws_subnet" "private_subnet_1" {
+  vpc_id            = aws_vpc.main.id
+  cidr_block        = var.private_subnet_1_cidr
+  availability_zone = "eu-west-1a"
+}
+
+resource "aws_subnet" "private_subnet_2" {
+  vpc_id            = aws_vpc.main.id
+  cidr_block        = var.private_ subnet_2_cidr
+  availability_zone = "eu-west-1b"
+}
+
+# Create Route Tables
+resource "aws_route_table" "public_route_table" {
+  vpc_id = aws_vpc.main.id
+}
+
+resource "aws_route_table" "private_route_table" {
+  vpc_id = aws_vpc.main.id
+}
+
+# Public Route to Internet Gateway
+resource "aws_route" "public_route" {
+  route_table_id = aws_route_table.public_route_table.id
+  destination_cidr_block = "0.0.0.0/0"
+  gateway_id = aws_internet_gateway.gw.id
+}
+
+# Associate Public Subnets with Public Route Table
+resource "aws_route_table_association" "public_association" {
+  subnet_id = aws_subnet.public_subnet_1.id
+  route_table_id = aws_route_table.public_route_table.id
+}
+
+resource "aws_route_table_association" "public_association_2" {
+  subnet_id = aws_subnet.public_subnet_2.id
+  route_table_id = aws_route_table.public_route_table.id
+}
+
+# Create NAT Gateway (attached to private subnet for outbound traffic)
+resource "aws_nat_gateway" "nat_gateway" {
+  subnet_id = aws_subnet.private_subnet_1.id
+}
+
+# References to other files for complete configuration
+# ... security_groups.tf for security group definitions
+# ... load_balancers.tf for Elastic Load Balancers
+# ... instances.tf for Launch Template and Auto Scaling Group
+
+# Expose outputs for resources (optional)
+# outputs {
+#   vpc_id = aws_vpc.main.id
+#   public_subnet_1_id = aws_subnet.public_subnet_1.id
+#   # ... other outputs
+# }
+resource "aws_security_group" "web_server" {
+  name = "web-server-sg"
+  description = "Security group for web servers"
+
+  ingress {
+    from_port = 80 # Allow HTTP traffic
+    to_port = 80
+    protocol = "tcp"
+    cidr_blocks = ["0.0.0.0/0"] # Allow all for now (restrict later)
+  }
+
+  egress {
+    from_port = 0
+    to_port = 0
+    protocol = "-1"
+    cidr_blocks = ["0.0.0.0/0"] # Allow all outbound traffic
+  }
+}
+
+resource "aws_security_group" "bastion" {
+  name = "bastion-sg"
+  description = "Security group for bastion host"
+
+  ingress {
+    from_port = 22
+    to_port = 22
+    protocol = "tcp"
+    cidr_blocks = ["<YOUR_PUBLIC_IP>/32"] # Replace with your public IP for SSH access
+  }
+
+  egress {
+    from_port = 0
+    to_port = 0
+    protocol = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+}
+resource "aws_elb" "public_elb" {
+  name = "public-elb"
+  internal = false # Public ELB for external traffic
+  subnets = [aws_subnet.public_subnet_1.id, aws_subnet.public_subnet_2.id]
+  security_groups = [aws_security_group.web_server.id]
+
+  # Health check configuration (optional)
+  # health_check {
+  #   target = "HTTP:80/"
+  #   interval = 30
+  #   timeout = 5
+  #   unhealthy_threshold = 2
+  # }
+}
+
+resource "aws_elb" "internal_elb" {
+  name = "internal-elb"
+  internal = true # Internal ELB for communication within VPC
+  subnets = [aws_subnet.private_subnet_1.id, aws_subnet.private_subnet_2.id]
+  security_groups = [aws_security_group.web_server.id]
+
+  # Health check configuration (optional) - similar to public_elb
+}
+resource "aws_launch_template" "web_server" {
+  name = "web-server-template"
+  image_id = "ami-0ad8c47d2f1391ff0" # Replace with your desired AMI ID
+  instance_type = "t2.micro"
+
+  security_group_ids = [aws_security_group.web_server.id]
+
+  # User data script (optional) for initial configuration
+  # user_data = <<-EOF
+  # ... your script here
+  # EOF
+}
+
+resource "aws_autoscaling_group" "web_servers" {
+  name = "web-server-group"
+  vpc_zone_identifier = [
+    aws_subnet.public_subnet_1.id,
+    aws_subnet.public_subnet_2.id,
+  ]
+
+  launch_template {
+    id = aws_launch_template.web_server.id
+  }
+
+  min_size = 2
+  max_size = 4
+
+  # Health check configuration (optional) - reference the appropriate ELB
+  # health_check_type = "ELB"
+  # health_check_grace_period_seconds = 60
+  # health_check_protocol = "HTTP"
+  # health_check_port = "80"
+  # load_balancer_names = [aws_elb.public_elb.name]
+}
+resource "aws_security_group" "bastion" {
+  name = "bastion-sg"
+  description = "Security group for bastion host"
+
+  ingress {
+    from_port = 22
+    to_port = 22
+    protocol = "tcp"
+    cidr_blocks = ["<YOUR_PUBLIC_IP>/32"]  # Replace with your public IP
+  }
+
+  egress {
+    from_port = 0
+    to_port = 0
+    protocol = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+}
+# ... other resources
+
+resource "aws_instance" "bastion" {
+  ami           = "ami-03b788e377778a08b" # Replace with your desired bastion AMI ID
+  instance_type = "t2.micro"
+  vpc_security_group_ids = [aws_security_group.bastion.id]
+  subnet_id = aws_subnet.public_subnet_1.id  # Place in a public subnet
+
+  # User data script (optional) for initial configuration
+  # user_data = <<-EOF
+  # ... your script here
+  # EOF
+}
